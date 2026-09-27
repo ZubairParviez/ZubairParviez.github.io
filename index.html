@@ -127,7 +127,14 @@ tfoot td{font-weight:700; border-top:2px solid var(--ink); font-family:system-ui
     <div><label>Estimate number</label><input type="text" id="f_est" placeholder="EST-002641"></div>
     <div><label>Amount (SAR)</label><input type="number" step="0.01" id="f_amount" placeholder="0.00"></div>
     <div><label>Payment status</label><input type="text" id="f_status" placeholder="100% incoming with vat"></div>
-    <div style="grid-column:1/-1"><label>5% & VAT cutting status</label><input type="text" id="f_cut" placeholder="e.g. 2,193 VAT & 731 profit cut"></div>
+    <div style="grid-column:1/-1">
+      <label>5% & VAT cutting calculator</label>
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px;margin-top:2px;">
+        <div><label style="font-size:.72rem;">Invoice value (SAR, without VAT)</label><input type="number" step="0.01" id="f_cutInvoiceValue" placeholder="20000"></div>
+        <div><label style="font-size:.72rem;">Invoice VAT (SAR)</label><input type="number" step="0.01" id="f_cutVat" placeholder="3000"></div>
+      </div>
+      <div style="margin-top:6px;font-size:.85rem;">5% profit: <b id="cutProfitOut">0.00</b> SAR &nbsp;|&nbsp; Total cut (VAT + 5%): <b id="cutTotalOut">0.00</b> SAR</div>
+    </div>
     <div><label>Received (SAR)</label><input type="text" id="f_received" placeholder="13,889.00 (05/02/2026)"></div>
     <div><label>Remaining balance (SAR)</label><input type="number" step="0.01" id="f_remaining" placeholder="0.00"></div>
     <div><label>Invoice status</label><input type="text" id="f_invoice" placeholder="INV-000654"></div>
@@ -387,7 +394,9 @@ function openForm(entry){
   document.getElementById('f_est').value = entry ? entry.est : '';
   document.getElementById('f_amount').value = entry ? entry.amount : '';
   document.getElementById('f_status').value = entry ? entry.status : '';
-  document.getElementById('f_cut').value = entry ? entry.cut : '';
+  document.getElementById('f_cutInvoiceValue').value = entry && entry.cutInvoiceValue ? entry.cutInvoiceValue : '';
+  document.getElementById('f_cutVat').value = entry && entry.cutVat ? entry.cutVat : '';
+  recalcCut();
   document.getElementById('f_received').value = entry ? entry.received : '';
   document.getElementById('f_remaining').value = entry ? entry.remaining : '';
   document.getElementById('f_invoice').value = entry ? entry.invoice : '';
@@ -401,6 +410,18 @@ function openForm(entry){
   document.getElementById('f_date').focus();
 }
 function closeForm(){ formCard.classList.add('hidden'); editId=null; }
+
+function recalcCut(){
+  const v=Number(document.getElementById('f_cutInvoiceValue').value)||0;
+  const vat=Number(document.getElementById('f_cutVat').value)||0;
+  const profit=v*0.05;
+  const total=vat+profit;
+  document.getElementById('cutProfitOut').textContent=fmt(profit);
+  document.getElementById('cutTotalOut').textContent=fmt(total);
+  return {v,vat,profit,total};
+}
+document.getElementById('f_cutInvoiceValue').addEventListener('input', recalcCut);
+document.getElementById('f_cutVat').addEventListener('input', recalcCut);
 
 document.getElementById('btnNew').onclick=()=>{
   if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
@@ -487,7 +508,11 @@ document.getElementById('btnSave').onclick=async ()=>{
     est: document.getElementById('f_est').value,
     amount: document.getElementById('f_amount').value,
     status: document.getElementById('f_status').value,
-    cut: document.getElementById('f_cut').value,
+    cut: (()=>{ const c=recalcCut(); return `VAT ${fmt(c.vat)} + 5% profit ${fmt(c.profit)} = Total ${fmt(c.total)}`; })(),
+    cutInvoiceValue: Number(document.getElementById('f_cutInvoiceValue').value)||0,
+    cutVat: Number(document.getElementById('f_cutVat').value)||0,
+    cutProfit5: recalcCut().profit,
+    cutTotal: recalcCut().total,
     received: document.getElementById('f_received').value,
     remaining: document.getElementById('f_remaining').value,
     invoice: document.getElementById('f_invoice').value,
