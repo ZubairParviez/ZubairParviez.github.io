@@ -116,6 +116,7 @@ tfoot td{font-weight:700; border-top:2px solid var(--ink); font-family:system-ui
   <button id="btnImport">Restore backup</button>
   <input type="file" id="importFile" accept="application/json,.json" class="hidden">
   <button id="btnClear">Clear all</button>
+  <button id="btnShare">🔗 Share view-only link</button>
 </div>
 <div class="sub" id="syncBadge" style="font-weight:600;"></div>
 
@@ -130,13 +131,13 @@ tfoot td{font-weight:700; border-top:2px solid var(--ink); font-family:system-ui
     <div><label>Received (SAR)</label><input type="text" id="f_received" placeholder="13,889.00 (05/02/2026)"></div>
     <div><label>Remaining balance (SAR)</label><input type="number" step="0.01" id="f_remaining" placeholder="0.00"></div>
     <div><label>Invoice status</label><input type="text" id="f_invoice" placeholder="INV-000654"></div>
-    <div><label>Invoice receipt (PDF/Image)</label>
-      <input type="file" id="f_invoiceFile" accept="application/pdf,image/*">
-      <div id="invoiceFileStatus" style="font-size:.72rem;color:var(--ink-soft);margin-top:4px;"></div>
+    <div><label>Incoming amount — receipts (PDF/Image, multiple allowed)</label>
+      <input type="file" id="f_incomingFiles" accept="application/pdf,image/*" multiple>
+      <div id="incomingFilesList" style="font-size:.72rem;margin-top:4px;"></div>
     </div>
-    <div><label>Payment received receipt (PDF/Image)</label>
-      <input type="file" id="f_receivedFile" accept="application/pdf,image/*">
-      <div id="receivedFileStatus" style="font-size:.72rem;color:var(--ink-soft);margin-top:4px;"></div>
+    <div><label>Received amount — receipts (PDF/Image, multiple allowed)</label>
+      <input type="file" id="f_receivedFiles" accept="application/pdf,image/*" multiple>
+      <div id="receivedFilesList" style="font-size:.72rem;margin-top:4px;"></div>
     </div>
   </div>
   <div class="formrow">
@@ -343,9 +344,9 @@ function render(){
       <td class="num">${fmt(e.amount)}</td>
       <td>${esc(e.status)}</td>
       <td>${esc(e.cut)}</td>
-      <td>${esc(e.received)}${e.receivedFileLink?` <a href="${e.receivedFileLink}" target="_blank" rel="noopener" title="${esc(e.receivedFileName||'receipt')}">📎</a>`:''}</td>
+      <td>${esc(e.received)} ${renderFileLinks(e.receivedFiles)}</td>
       <td class="num ${Number(e.remaining)<0?'neg':''}">${fmt(e.remaining)}</td>
-      <td>${esc(e.invoice)}${e.invoiceFileLink?` <a href="${e.invoiceFileLink}" target="_blank" rel="noopener" title="${esc(e.invoiceFileName||'invoice')}">📎</a>`:''}</td>
+      <td>${esc(e.invoice)} ${renderFileLinks(e.incomingFiles)}</td>
       <td class="actions">
         <button data-edit="${e.id}">Edit</button>
         <button data-del="${e.id}">Delete</button>
@@ -362,6 +363,22 @@ function updateSummary(){
   document.getElementById('sumNet').textContent=fmt(ledgerTotal-cutsTotal)+' SAR';
 }
 function esc(s){ return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function renderFileLinks(arr){ return (arr||[]).map(f=>`<a href="${f.link}" target="_blank" rel="noopener" title="${esc(f.name)}">📎</a>`).join(''); }
+let editingIncoming=[], editingReceived=[];
+function renderFileList(containerId, arr){
+  const el=document.getElementById(containerId);
+  if(!arr.length){ el.textContent='No receipts attached yet.'; return; }
+  el.innerHTML=arr.map((f,i)=>`<div>📎 <a href="${f.link}" target="_blank" rel="noopener">${esc(f.name)}</a> <button type="button" data-rm="${i}" style="padding:1px 6px;font-size:.68rem;">✕</button></div>`).join('');
+  el.querySelectorAll('[data-rm]').forEach(b=>{ b.onclick=()=>{ arr.splice(Number(b.dataset.rm),1); renderFileList(containerId, arr); }; });
+}
+async function makePublic(fileId){
+  try{
+    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`,{
+      method:'POST', headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},
+      body:JSON.stringify({role:'reader', type:'anyone'})
+    });
+  }catch(e){ /* best effort */ }
+}
 
 function openForm(entry){
   editId = entry ? entry.id : null;
@@ -374,20 +391,45 @@ function openForm(entry){
   document.getElementById('f_received').value = entry ? entry.received : '';
   document.getElementById('f_remaining').value = entry ? entry.remaining : '';
   document.getElementById('f_invoice').value = entry ? entry.invoice : '';
-  document.getElementById('f_invoiceFile').value='';
-  document.getElementById('invoiceFileStatus').innerHTML = (entry && entry.invoiceFileLink) ? `📎 <a href="${entry.invoiceFileLink}" target="_blank" rel="noopener">${esc(entry.invoiceFileName||'attached file')}</a> — choosing a new file replaces it` : '';
-  document.getElementById('f_receivedFile').value='';
-  document.getElementById('receivedFileStatus').innerHTML = (entry && entry.receivedFileLink) ? `📎 <a href="${entry.receivedFileLink}" target="_blank" rel="noopener">${esc(entry.receivedFileName||'attached file')}</a> — choosing a new file replaces it` : '';
+  editingIncoming = entry && entry.incomingFiles ? entry.incomingFiles.slice() : [];
+  editingReceived = entry && entry.receivedFiles ? entry.receivedFiles.slice() : [];
+  document.getElementById('f_incomingFiles').value='';
+  document.getElementById('f_receivedFiles').value='';
+  renderFileList('incomingFilesList', editingIncoming);
+  renderFileList('receivedFilesList', editingReceived);
   formCard.classList.remove('hidden');
   document.getElementById('f_date').focus();
 }
 function closeForm(){ formCard.classList.add('hidden'); editId=null; }
 
-document.getElementById('btnNew').onclick=()=>openForm(null);
+document.getElementById('btnNew').onclick=()=>{
+  if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
+  openForm(null);
+};
 document.getElementById('btnCancel').onclick=closeForm;
 document.getElementById('btnPrint').onclick=()=>window.print();
 document.getElementById('btnClear').onclick=()=>{
+  if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
   if(entries.length && confirm('Clear all entries? This cannot be undone.')){ entries=[]; save(); render(); }
+};
+
+document.getElementById('btnShare').onclick=async ()=>{
+  if(!signedIn){ alert('Please sign in with Google first.'); return; }
+  if(!driveFileId){ alert('Save at least one entry first, so there is data to share.'); return; }
+  const btn=document.getElementById('btnShare');
+  btn.disabled=true; btn.textContent='Preparing link…';
+  try{
+    await makePublic(driveFileId);
+    const ids=new Set();
+    entries.forEach(e=>{ (e.incomingFiles||[]).forEach(f=>ids.add(f.id)); (e.receivedFiles||[]).forEach(f=>ids.add(f.id)); });
+    for(const id of ids){ await makePublic(id); }
+    try{ localStorage.setItem('ledger-sharing-enabled','1'); }catch(e){}
+    const link=location.origin+location.pathname.replace(/index\.html$/,'')+'view.html?id='+driveFileId;
+    prompt('Anyone with this link can VIEW your ledger and receipts (no sign-in, no editing). Copy it to share:', link);
+  }catch(e){
+    alert('Could not prepare the share link. Please try again.');
+  }
+  btn.disabled=false; btn.textContent='🔗 Share view-only link';
 };
 
 // Backup: export via the downloads capability, import via a local file read.
@@ -436,8 +478,8 @@ document.getElementById('importFile').addEventListener('change', ev=>{
 });
 
 document.getElementById('btnSave').onclick=async ()=>{
+  if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
   const btn=document.getElementById('btnSave');
-  const prev = editId ? entries.find(e=>e.id===editId) : null;
   btn.disabled=true; btn.textContent='Saving…';
   const data={
     id: editId || (Date.now()+Math.random().toString(16).slice(2)),
@@ -449,17 +491,18 @@ document.getElementById('btnSave').onclick=async ()=>{
     received: document.getElementById('f_received').value,
     remaining: document.getElementById('f_remaining').value,
     invoice: document.getElementById('f_invoice').value,
-    invoiceFileId: prev?prev.invoiceFileId:null, invoiceFileLink: prev?prev.invoiceFileLink:null, invoiceFileName: prev?prev.invoiceFileName:null,
-    receivedFileId: prev?prev.receivedFileId:null, receivedFileLink: prev?prev.receivedFileLink:null, receivedFileName: prev?prev.receivedFileName:null,
   };
+  const sharing = (localStorage.getItem('ledger-sharing-enabled')==='1');
   try{
-    const invFile=document.getElementById('f_invoiceFile').files[0];
-    if(invFile){ const up=await uploadReceiptFile(invFile,'invoice'); if(up){ data.invoiceFileId=up.id; data.invoiceFileLink=up.webViewLink; data.invoiceFileName=up.name; } }
-    const recFile=document.getElementById('f_receivedFile').files[0];
-    if(recFile){ const up=await uploadReceiptFile(recFile,'received'); if(up){ data.receivedFileId=up.id; data.receivedFileLink=up.webViewLink; data.receivedFileName=up.name; } }
+    const incFiles=[...document.getElementById('f_incomingFiles').files];
+    for(const file of incFiles){ const up=await uploadReceiptFile(file,'incoming'); if(up){ if(sharing) await makePublic(up.id); editingIncoming.push({id:up.id, link:up.webViewLink, name:up.name}); } }
+    const recFiles=[...document.getElementById('f_receivedFiles').files];
+    for(const file of recFiles){ const up=await uploadReceiptFile(file,'received'); if(up){ if(sharing) await makePublic(up.id); editingReceived.push({id:up.id, link:up.webViewLink, name:up.name}); } }
   }catch(e){
     alert('One of the receipt files could not be uploaded. The rest of the entry was still saved.');
   }
+  data.incomingFiles=editingIncoming;
+  data.receivedFiles=editingReceived;
   if(editId){
     const i=entries.findIndex(e=>e.id===editId);
     if(i>-1) entries[i]=data;
@@ -474,10 +517,12 @@ rowsEl.addEventListener('click', ev=>{
   const editBtn=ev.target.closest('[data-edit]');
   const delBtn=ev.target.closest('[data-del]');
   if(editBtn){
+    if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
     const e=entries.find(x=>x.id===editBtn.dataset.edit);
     if(e) openForm(e);
   }
   if(delBtn){
+    if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
     if(confirm('Delete this entry?')){
       entries=entries.filter(x=>x.id!==delBtn.dataset.del);
       save(); render();
@@ -487,10 +532,11 @@ rowsEl.addEventListener('click', ev=>{
 
 document.getElementById('cutsInput').value=cutsTotal;
 document.getElementById('cutsInput').addEventListener('input', ev=>{
+  if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); ev.target.value=cutsTotal; return; }
   cutsTotal=Number(ev.target.value)||0;
   try{ localStorage.setItem(CUTS_KEY, String(cutsTotal)); }catch(e){}
   updateSummary();
-  if(signedIn) pushToDrive();
+  pushToDrive();
 });
 
 render();
