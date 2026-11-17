@@ -223,7 +223,7 @@ function save(){
   if(signedIn) pushToDrive();
 }
 
-// ---- Google Drive sync ----
+// ---- Google Drive sync (Updated with ux_mode: 'redirect' for mobile compatibility) ----
 const GOOGLE_CLIENT_ID='239011021933-999vb8rko55npb6di7nfd8n7st2tb5k2.apps.googleusercontent.com';
 const DRIVE_SCOPE='https://www.googleapis.com/auth/drive.file';
 const DRIVE_FILENAME='payment-ledger-data.json';
@@ -241,6 +241,7 @@ function initGoogle(){
   tokenClient=google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
     scope: DRIVE_SCOPE,
+    ux_mode: 'redirect',
     callback: (resp)=>{
       if(resp && resp.access_token){
         accessToken=resp.access_token; signedIn=true;
@@ -251,6 +252,9 @@ function initGoogle(){
       }
     }
   });
+  
+  // Check if returning from redirect
+  // Google GIS automatically handles fragment parsing on redirect if callback is set.
   setSyncStatus('Not signed in — data is saved on this device only','var(--ink-soft)');
 }
 
@@ -373,209 +377,3 @@ function updateSummary(){
 }
 function esc(s){ return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function renderFileLinks(arr){ return (arr||[]).map(f=>`<a href="${f.link}" target="_blank" rel="noopener" title="${esc(f.name)}">📎</a>`).join(''); }
-let editingIncoming=[], editingReceived=[];
-function renderFileList(containerId, arr){
-  const el=document.getElementById(containerId);
-  if(!arr.length){ el.textContent='No receipts attached yet.'; return; }
-  el.innerHTML=arr.map((f,i)=>`<div>📎 <a href="${f.link}" target="_blank" rel="noopener">${esc(f.name)}</a> <button type="button" data-rm="${i}" style="padding:1px 6px;font-size:.68rem;">✕</button></div>`).join('');
-  el.querySelectorAll('[data-rm]').forEach(b=>{ b.onclick=()=>{ arr.splice(Number(b.dataset.rm),1); renderFileList(containerId, arr); }; });
-}
-async function makePublic(fileId){
-  try{
-    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`,{
-      method:'POST', headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},
-      body:JSON.stringify({role:'reader', type:'anyone'})
-    });
-  }catch(e){ /* best effort */ }
-}
-
-function openForm(entry){
-  editId = entry ? entry.id : null;
-  document.getElementById('formTitle').textContent = entry ? 'Edit entry' : 'New entry';
-  document.getElementById('f_date').value = entry ? entry.date : '';
-  document.getElementById('f_est').value = entry ? entry.est : '';
-  document.getElementById('f_amount').value = entry ? entry.amount : '';
-  document.getElementById('f_status').value = entry ? entry.status : '';
-  document.getElementById('f_cutInvoiceValue').value = entry && entry.cutInvoiceValue ? entry.cutInvoiceValue : '';
-  document.getElementById('f_cutVat').value = entry && entry.cutVat ? entry.cutVat : '';
-  recalcCut();
-  document.getElementById('f_received').value = entry ? entry.received : '';
-  document.getElementById('f_remaining').value = entry ? entry.remaining : '';
-  document.getElementById('f_invoice').value = entry ? entry.invoice : '';
-  document.getElementById('f_comment').value = entry && entry.comment ? entry.comment : '';
-  editingIncoming = entry && entry.incomingFiles ? entry.incomingFiles.slice() : [];
-  editingReceived = entry && entry.receivedFiles ? entry.receivedFiles.slice() : [];
-  document.getElementById('f_incomingFiles').value='';
-  document.getElementById('f_receivedFiles').value='';
-  renderFileList('incomingFilesList', editingIncoming);
-  renderFileList('receivedFilesList', editingReceived);
-  formCard.classList.remove('hidden');
-  document.getElementById('f_date').focus();
-}
-function closeForm(){ formCard.classList.add('hidden'); editId=null; }
-
-function recalcCut(){
-  const v=Number(document.getElementById('f_cutInvoiceValue').value)||0;
-  const vat=Number(document.getElementById('f_cutVat').value)||0;
-  const profit=v*0.05;
-  const total=vat+profit;
-  document.getElementById('cutProfitOut').textContent=fmt(profit);
-  document.getElementById('cutTotalOut').textContent=fmt(total);
-  return {v,vat,profit,total};
-}
-document.getElementById('f_cutInvoiceValue').addEventListener('input', recalcCut);
-document.getElementById('f_cutVat').addEventListener('input', recalcCut);
-
-document.getElementById('btnNew').onclick=()=>{
-  if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
-  openForm(null);
-};
-document.getElementById('btnCancel').onclick=closeForm;
-document.getElementById('btnPrint').onclick=()=>window.print();
-document.getElementById('btnClear').onclick=()=>{
-  if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
-  if(entries.length && confirm('Clear all entries? This cannot be undone.')){ entries=[]; save(); render(); }
-};
-
-document.getElementById('btnShare').onclick=async ()=>{
-  if(!signedIn){ alert('Please sign in with Google first.'); return; }
-  if(!driveFileId){ alert('Save at least one entry first, so there is data to share.'); return; }
-  const btn=document.getElementById('btnShare');
-  btn.disabled=true; btn.textContent='Preparing link…';
-  try{
-    await makePublic(driveFileId);
-    const ids=new Set();
-    entries.forEach(e=>{ (e.incomingFiles||[]).forEach(f=>ids.add(f.id)); (e.receivedFiles||[]).forEach(f=>ids.add(f.id)); });
-    for(const id of ids){ await makePublic(id); }
-    try{ localStorage.setItem('ledger-sharing-enabled','1'); }catch(e){}
-    const link=location.origin+location.pathname.replace(/index\.html$/,'')+'view.html?id='+driveFileId;
-    prompt('Anyone with this link can VIEW your ledger and receipts (no sign-in, no editing). Copy it to share:', link);
-  }catch(e){
-    alert('Could not prepare the share link. Please try again.');
-  }
-  btn.disabled=false; btn.textContent='🔗 Share view-only link';
-};
-
-// Backup export: use Claude's downloads capability when present (claude.ai artifact view),
-// otherwise fall back to a plain browser download (works on GitHub Pages / any normal host).
-let downloadsCap=null;
-(async()=>{
-  try{
-    if(window.claude && window.claude.use){ downloadsCap=await window.claude.use('downloads'); }
-  }catch(e){ downloadsCap=null; }
-})();
-
-function downloadJSON(filename, dataStr){
-  const blob=new Blob([dataStr], {type:'application/json'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url; a.download=filename;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-document.getElementById('btnExport').onclick=async()=>{
-  if(!entries.length){ alert('No entries to back up yet.'); return; }
-  const data=JSON.stringify({entries, cutsTotal}, null, 2);
-  const stamp=new Date().toISOString().slice(0,10);
-  const filename=`payment-ledger-backup-${stamp}.json`;
-  if(downloadsCap){
-    try{ await downloadsCap.save({filename, data}); return; }
-    catch(err){ if(err && err.code==='declined'){ return; } }
-  }
-  downloadJSON(filename, data);
-};
-
-document.getElementById('btnImport').onclick=()=>document.getElementById('importFile').click();
-document.getElementById('importFile').addEventListener('change', ev=>{
-  const file=ev.target.files[0];
-  ev.target.value='';
-  if(!file) return;
-  const reader=new FileReader();
-  reader.onload=()=>{
-    let parsed;
-    try{ parsed=JSON.parse(reader.result); }
-    catch(e){ alert('This file could not be read as a ledger backup.'); return; }
-    const newEntries = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.entries) ? parsed.entries : null;
-    if(!newEntries){ alert('This file could not be read as a ledger backup.'); return; }
-    const newCuts = (parsed && !Array.isArray(parsed) && parsed.cutsTotal!==undefined) ? Number(parsed.cutsTotal) : null;
-    if(confirm(`Load ${newEntries.length} entr${newEntries.length===1?'y':'ies'} from this backup? This replaces what's currently in the table.`)){
-      entries=newEntries; save();
-      if(newCuts!==null){ cutsTotal=newCuts; document.getElementById('cutsInput').value=cutsTotal; try{ localStorage.setItem(CUTS_KEY, String(cutsTotal)); }catch(e){} }
-      render();
-    }
-  };
-  reader.readAsText(file);
-});
-
-document.getElementById('btnSave').onclick=async ()=>{
-  if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
-  const btn=document.getElementById('btnSave');
-  btn.disabled=true; btn.textContent='Saving…';
-  const data={
-    id: editId || (Date.now()+Math.random().toString(16).slice(2)),
-    date: document.getElementById('f_date').value,
-    est: document.getElementById('f_est').value,
-    amount: document.getElementById('f_amount').value,
-    status: document.getElementById('f_status').value,
-    cut: (()=>{ const c=recalcCut(); return `VAT ${fmt(c.vat)} + 5% profit ${fmt(c.profit)} = Total ${fmt(c.total)}`; })(),
-    cutInvoiceValue: Number(document.getElementById('f_cutInvoiceValue').value)||0,
-    cutVat: Number(document.getElementById('f_cutVat').value)||0,
-    cutProfit5: recalcCut().profit,
-    cutTotal: recalcCut().total,
-    received: document.getElementById('f_received').value,
-    remaining: document.getElementById('f_remaining').value,
-    invoice: document.getElementById('f_invoice').value,
-    comment: document.getElementById('f_comment').value,
-  };
-  const sharing = (localStorage.getItem('ledger-sharing-enabled')==='1');
-  try{
-    const incFiles=[...document.getElementById('f_incomingFiles').files];
-    for(const file of incFiles){ const up=await uploadReceiptFile(file,'incoming'); if(up){ if(sharing) await makePublic(up.id); editingIncoming.push({id:up.id, link:up.webViewLink, name:up.name}); } }
-    const recFiles=[...document.getElementById('f_receivedFiles').files];
-    for(const file of recFiles){ const up=await uploadReceiptFile(file,'received'); if(up){ if(sharing) await makePublic(up.id); editingReceived.push({id:up.id, link:up.webViewLink, name:up.name}); } }
-  }catch(e){
-    alert('One of the receipt files could not be uploaded. The rest of the entry was still saved.');
-  }
-  data.incomingFiles=editingIncoming;
-  data.receivedFiles=editingReceived;
-  if(editId){
-    const i=entries.findIndex(e=>e.id===editId);
-    if(i>-1) entries[i]=data;
-  } else {
-    entries.push(data);
-  }
-  save(); render(); closeForm();
-  btn.disabled=false; btn.textContent='Save entry';
-};
-
-rowsEl.addEventListener('click', ev=>{
-  const editBtn=ev.target.closest('[data-edit]');
-  const delBtn=ev.target.closest('[data-del]');
-  if(editBtn){
-    if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); return; }
-    const e=entries.find(x=>x.id===editBtn.dataset.edit);
-    if(e) openForm(e);
-  }
-  if(delBtn){
-    if(!signedIn){ alert('Please tap "Sign in with Google" total first — editing needs you to be signed in.'); return; }
-    if(confirm('Delete this entry?')){
-      entries=entries.filter(x=>x.id!==delBtn.dataset.del);
-      save(); render();
-    }
-  }
-});
-
-document.getElementById('cutsInput').value=cutsTotal;
-document.getElementById('cutsInput').addEventListener('input', ev=>{
-  if(!signedIn){ alert('Please tap "Sign in with Google" first — editing needs you to be signed in.'); ev.target.value=cutsTotal; return; }
-  cutsTotal=Number(ev.target.value)||0;
-  try{ localStorage.setItem(CUTS_KEY, String(cutsTotal)); }catch(e){}
-  updateSummary();
-  pushToDrive();
-});
-
-render();
-</script>
-</body>
-</html>
